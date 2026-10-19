@@ -23,6 +23,6 @@
 | 阶段目标 | [MISSION.md](MISSION.md) |
 | 原始参考资料 | [RESOURCES.md](RESOURCES.md) |
 
-下载仓库 ZIP 并解压，使用浏览器打开 `index.html` 即可使用互动课程，无需额外安装课程依赖。GitHub 文件页面展示 HTML 源码；本仓库尚未启用 GitHub Pages。
+下载仓库 ZIP 并解压，使用浏览器打开 `index.html` 即可使用互动课程，无需额外安装课程依赖。也可以直接访问 [在线互动课程](https://shanpao-orzw.github.io/SDN-learning/)。GitHub 仓库中的 HTML 文件页展示源码，在线课程网站则可直接阅读和操作。
 
 课程页面是概念教学模拟；Mininet 实验运行真实 Linux 网络栈与 OVS。首个实验使用无外部控制器的二层桥模式，不把 ping 成功等同于控制器或 OpenFlow 规则实验成功。
