@@ -1,0 +1,38 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第七课：控制平面与数据平面</title><link rel="stylesheet" href="../assets/course.css"><link rel="stylesheet" href="../assets/interactive.css"></head><body><main class="interactive-page"><p class="meta">SDN 网络安全 · 第七课 · 约 8 分钟</p><h1>谁制定转发规则，谁执行规则？</h1><p>本课目标：区分建立转发规则与逐包执行规则，从熟悉的查表转发进入 SDN 架构。</p><table><tr><th>职责</th><th>含义</th><th>本课例子</th></tr><tr><td>控制平面</td><td>决定路径、建立或调整转发规则</td><td>计算去 B 的路径，并为交换机生成规则</td></tr><tr><td>数据平面（转发平面）</td><td>对到来的数据匹配现有规则并执行动作</td><td>匹配规则后，从接口2发送</td></tr></table><p class="focus">查表选出口也是执行现有规则，属于数据平面；不是只要“做了判断”就属于控制平面。</p><h2>SDN 把两种职责分开</h2><p>在典型的控制器式 SDN 中，控制器软件建立、调整转发规则，交换机执行规则。控制器通过控制通道与交换机交换规则和状态信息。控制与转发解耦、可编程控制，是 SDN 的核心思想。<a href="https://opennetworking.org/sdn-definition/">依据：ONF 的 SDN 定义</a>。</p><pre>             控制器
+          制定、调整规则
+                │ 控制信息
+                ▼
+A ───────── 交换机 S ───────── B
+             执行转发规则</pre><p>设本例规则已安装且有效：“目的 MAC 是 B，就从接口2发出。”A 的帧到达 S 后，S 直接匹配并转发，<strong>不必把每个帧都先交给控制器</strong>。无匹配时的处理以后另讲。</p><aside>本图是教学示意，不等于所有 SDN 都只有一台控制器，也不表示业务数据必须经过控制器。MAC 学习交换机与 SDN 流表的具体差异在后续展开。</aside><section class="lab" id="control-data-lab" aria-labelledby="lab-title">
+<div class="lab-header"><span class="lab-eyebrow">SDN · 交互实验 07</span><h2 id="lab-title">让规则与数据各走各的路</h2><p>安装规则 → 发送一帧 → 断开控制连接 → 再发一帧</p><span class="lab-badge">本地教学模拟 · 无需联网</span></div><div class="lab-body">
+<div class="lab-progress" aria-label="探索进度"><span id="lab-step-1">1 安装规则</span><span id="lab-step-2">2 发送数据</span><span id="lab-step-3">3 断开控制</span><span id="lab-step-4">4 再次转发</span></div>
+<div class="lab-stage"><svg viewBox="0 0 780 340" role="img" aria-labelledby="topology-title topology-desc"><title id="topology-title">控制通道与业务路径</title><desc id="topology-desc">控制器在上方，下方是 A、交换机 S 和 B。接口2与3表示两条都可到达B的路径；移动的蓝点表示控制信息，绿点表示数据帧。</desc>
+<path id="lab-control-path" class="wire control-wire" d="M390 87 L390 188"/>
+<path id="lab-input-path" class="wire" d="M150 236 L315 236"/>
+<path id="lab-route-2" class="wire" d="M465 218 C530 218 530 176 575 176 C620 176 600 218 640 218"/>
+<path id="lab-route-3" class="wire" d="M465 253 C530 253 530 300 575 300 C620 300 600 253 640 253"/>
+<g><rect class="device controller" x="302" y="16" width="176" height="71" rx="13"/><text class="svg-label" x="390" y="44" text-anchor="middle">控制器</text><text class="svg-small" x="390" y="66" text-anchor="middle">计算路径 · 更新规则</text></g>
+<text class="svg-small" id="lab-link" x="410" y="132">控制连接：已连接</text>
+<g id="lab-a"><rect class="device" x="45" y="198" width="105" height="76" rx="13"/><text class="svg-label" x="98" y="229" text-anchor="middle">主机 A</text><text class="svg-small" x="98" y="251" text-anchor="middle">发送数据</text></g>
+<g id="lab-switch"><rect class="device switch" x="315" y="188" width="150" height="96" rx="15"/><text class="svg-label" x="390" y="222" text-anchor="middle">交换机 S</text><text class="svg-small" x="390" y="246" text-anchor="middle">匹配规则 → 执行动作</text><text class="svg-small" id="lab-switch-state" x="390" y="269" text-anchor="middle">等待规则</text></g>
+<g id="lab-b"><rect class="device" x="640" y="198" width="105" height="76" rx="13"/><text class="svg-label" x="692" y="229" text-anchor="middle">主机 B</text><text class="svg-small" x="692" y="251" text-anchor="middle">接收数据</text></g>
+<text class="port-label" x="220" y="220" text-anchor="middle">接口 1</text><text class="port-label" x="565" y="157" text-anchor="middle">接口 2 · 上方路径</text><text class="port-label" x="565" y="326" text-anchor="middle">接口 3 · 下方路径</text>
+<circle id="lab-packet" class="packet" r="8" cx="0" cy="0" visibility="hidden"/>
+</svg><div class="lab-legend"><span>控制信息（蓝色）</span><span>业务数据（绿色）</span></div></div>
+<div class="lab-grid"><div><h3>你的操作台</h3><div class="lab-controls"><label>规则出口 <select id="lab-port"><option value="2">接口 2</option><option value="3">接口 3</option></select></label><button type="button" class="primary" id="lab-install">安装／更新规则</button><button type="button" class="primary" id="lab-send">A 发送一帧给 B</button></div>
+<div class="lab-controls"><button type="button" id="lab-toggle">断开控制连接</button><button type="button" id="lab-reset">重置实验</button></div>
+</div><div class="lab-rule-panel"><h3>交换机里的规则表</h3><table><thead><tr><th>匹配条件</th><th>执行动作</th></tr></thead><tbody><tr><td>目的 = B</td><td id="lab-rule">无匹配规则</td></tr></tbody></table><span class="lab-tag" id="lab-rule-status">尚未安装</span><small>控制器改写这张表，交换机查这张表。</small></div></div><p class="lab-feedback" id="lab-feedback" role="status" aria-live="polite">你来决定：先安装哪条规则？</p>
+<div class="lab-metrics"><span>规则更新成功：<strong id="lab-updates">0</strong> 次</span><span>按规则转发成功：<strong id="lab-count">0</strong> 帧</span></div>
+<details><summary>查看最近操作与解释</summary><ol class="lab-log" id="lab-events"></ol></details>
+<h3>做判断，马上看反馈</h3>
+<div class="lab-quiz">
+<fieldset data-answer="control" data-explanation="计算路径、建立并下发转发规则属于控制平面。"><legend>① 计算替代路径，安装新规则</legend><label><input type="radio" name="plane-1" value="control">控制平面</label><label><input type="radio" name="plane-1" value="data">数据平面</label><p class="lab-answer" role="status"></p></fieldset>
+<fieldset data-answer="data" data-explanation="查表匹配并执行现有规则属于数据平面，即使其中包含判断。"><legend>② 匹配目的地址，从接口3发送</legend><label><input type="radio" name="plane-2" value="data">数据平面</label><label><input type="radio" name="plane-2" value="control">控制平面</label><p class="lab-answer" role="status"></p></fieldset>
+<fieldset data-answer="continue" data-explanation="本实验已明确规则持续有效且业务链路正常，所以可继续执行规则；无法通过断开的控制连接更新规则。"><legend>③ 已装有效规则，只断开控制连接，业务转发会怎样？</legend><label><input type="radio" name="plane-3" value="stop">立即停止</label><label><input type="radio" name="plane-3" value="continue">继续转发</label><p class="lab-answer" role="status"></p></fieldset>
+</div>
+</div><div class="lab-bottom"><h3>把观察带回课堂</h3><p>操作只在当前页面内运行，刷新会重置。页面不会自动把结果写入项目学习记录；请复制摘要，在末尾补一句你的解释或疑问，发回聊天。</p>
+<label for="lab-summary">可复制的学习摘要</label><textarea id="lab-summary"></textarea><div class="lab-controls"><button type="button" id="lab-copy">复制摘要</button><span id="lab-copy-status" role="status"></span></div>
+</div><div class="lab-body"><small>模型边界：两条路径均可达 B；只断控制连接，不断业务链路。规则持续有效，交换机不重启。未匹配帧预设丢弃，真实行为取决于配置。</small></div><noscript><p>交互需要浏览器启用 JavaScript。你仍可阅读课文，或在聊天中完成练习。</p></noscript>
+</section>
+
+<h2>检查理解</h2><p>控制器观察到一条链路拥塞，计算替代路径并下发新规则；随后交换机按新规则从接口3发送到来的数据。</p><p>请判断：<strong>计算路径并下发规则、按新规则查表转发，分别属于哪个平面？为什么交换机不必为每个帧都询问控制器？</strong></p><p>把解释发回聊天；不清楚的地方可直接问老师。原始阅读建议：ONF 页面开头关于 decoupled 与 programmable 的说明即可，其余暂不必读。</p><footer><a href="0006-next-hop-mac.html">上一课：网关 MAC</a> · <a href="../reference/control-and-data.html">速查卡</a> · <a href="../index.html">目录</a><p>状态：文字练习通过，已能区分控制平面与数据平面并解释有效匹配规则的直接执行；互动用户自述已完成，未独立核验操作结果。ARP 请求字段区别后续间隔复习。</p><p><a href="0008-flow-match-action.html">下一课：匹配条件与动作</a></p></footer></main><script src="../assets/control-data-lab.js"></script></body></html>

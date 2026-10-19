@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>第三课：MAC 地址表怎样学出来</title><link rel="stylesheet" href="../assets/course.css"></head><body><main>
+<p class="meta">SDN 网络安全 · 第三课 · 约 8 分钟 · 无需安装或运行工具</p>
+<h1>MAC 地址表是怎样学出来的？</h1>
+<p>你已经能查表选择出口。本课只解决表项的来源，为理解网络设备如何建立转发依据打基础。</p>
+<p class="focus"><strong>学习看源 MAC 和入接口；转发看目的 MAC。</strong></p>
+<h2>交换机看到的线索</h2>
+<p>帧从接口 1 进入，源 MAC 为 <code>02:00:00:00:00:0a</code>。在正常动态学习的二层交换机上，它据此记录：到这个源 MAC 的流量，可从接口 1 转发。</p>
+<table><thead><tr><th>收到帧前</th><th>收到帧后新增的记录</th></tr></thead><tbody><tr><td>地址表为空</td><td><code>02:00:00:00:00:0a → 接口 1</code></td></tr></tbody></table>
+<p>这个记录来自<strong>谁从哪里发来了帧</strong>，并不要求先收到对方的回复。依据：<a href="https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst2960/software/release/12-2_58_se/configuration/guide/2960scg/swadmin.html">Cisco 官方文档：Understanding MAC Addresses</a>。</p>
+<aside>为什么不从目的 MAC 学接口？目的 MAC 说明“想发给谁”；仅凭有人想给 B 发消息，不能推断 B 位于这个入口方向。</aside>
+<h2>把两个动作分开</h2>
+<p>假设 B 的表项早已存在，对应接口 2。现在 A 的帧从接口 1 进入，源 MAC 是 A，目的 MAC 是 B：</p>
+<ol><li><strong>学习：</strong>记录 A 的源 MAC 与接口 1 的对应关系。</li><li><strong>转发：</strong>查 B 的目的 MAC，得到接口 2，从接口 2 发出。</li></ol>
+<p>本课假设同一 VLAN、接口与学习功能正常，不涉及环路、地址迁移或安全限制。查不到目的 MAC 时的处理留到下一课；它不影响这里对源地址学习的判断。</p>
+<h2>你的练习：补出两条表项</h2>
+<p>交换机的动态 MAC 表最初为空，依次观察到下列两帧。忽略表项老化，只判断能学到什么，不判断这两帧怎样转发。</p>
+<table><thead><tr><th>事件</th><th>入接口</th><th>源 MAC</th><th>目的 MAC</th></tr></thead><tbody><tr><td>①</td><td>3</td><td><code>02:00:00:00:00:0c</code></td><td><code>02:00:00:00:00:0a</code></td></tr><tr><td>②</td><td>1</td><td><code>02:00:00:00:00:0a</code></td><td><code>02:00:00:00:00:0c</code></td></tr></tbody></table>
+<p><strong>请写出最终学到的两条“MAC → 接口”，并用一句话说明为什么事件①不能让交换机直接学到 A 所在的接口。</strong>可以把答案发回聊天，我会根据解释调整下一步；不明白也请直接提问。</p>
+<details><summary>先自己作答，再展开核对</summary><p><code>02:00:00:00:00:0c → 接口 3</code>；<code>02:00:00:00:00:0a → 接口 1</code>。事件①只证明 C 的帧从接口 3 来；A 是目的地址，尚不能由它确定 A 的接口。事件②才提供 A 的源地址及入接口证据。</p></details>
+<h2>可选阅读与复习</h2><p>原始资料只读上述 Cisco 文档中 <em>Understanding MAC Addresses</em> 关于 source address 和 associated port 的段落；先不用读配置命令。<a href="../reference/mac-learning.html">本课速查卡</a>可用于隔天回忆，不必背长 MAC。</p>
+<footer><a href="0002-mac-table-lookup.html">上一课：查表选出口</a> · <a href="../index.html">课程目录</a><p>状态：单步追问及第四课两帧综合练习通过。</p><p><a href="0004-unknown-unicast.html">下一课：未知单播泛洪</a></p></footer>
+</main></body></html>

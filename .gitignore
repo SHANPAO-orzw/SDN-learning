@@ -1,0 +1,13 @@
+# Only publish reviewed learning artifacts; local teaching state stays local.
+/*
+!/.gitignore
+!/README.md
+!/MISSION.md
+!/RESOURCES.md
+!/index.html
+!/lessons/
+!/reference/
+!/assets/
+!/learning-records/
+.DS_Store
+*.pdf
