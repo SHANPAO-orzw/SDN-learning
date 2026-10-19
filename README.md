@@ -14,6 +14,7 @@
 
 | 内容 | 位置 |
 | --- | --- |
+| 个人学习笔记（原文） | [SDN学习.md](personal-notes/SDN学习.md) |
 | 互动课程入口 | [index.html](index.html) |
 | 12 节课程 | [lessons/](lessons/) |
 | 复习速查卡 | [reference/](reference/) |
