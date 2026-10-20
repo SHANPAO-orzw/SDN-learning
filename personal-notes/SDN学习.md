@@ -66,6 +66,8 @@ A ──────────── 交换机 ──────────�
 
 ## SDN实验
 
+### 实验一
+
 环境配置
 
 ```shell
@@ -698,3 +700,1639 @@ shanpao@shanpao-VMware20-1:~/Desktop$
 | 已知 h2 的 MAC → 端口 2 | 成功       | 抓到 0 个符合条件的包 |
 
 这验证了：**未知单播会泛洪；已知单播按 MAC 表定向转发。**两种情况下，帧的目的 MAC 都是 h2。
+
+**观察“没有转发规则时，交换机会怎样处理数据”**。
+
+之前使用 `ovsbr`，OVS 会按普通二层交换方式学习、转发。这次改用 `ovs` 的 `secure` 模式，避免自动退回普通学习交换机行为。
+
+Ubuntu 普通终端后执行：
+
+```shell
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller none --mac --arp
+```
+
+新增参数的含义：
+
+| 参数                   | 用途                                              |
+| ---------------------- | ------------------------------------------------- |
+| `failMode=secure`      | 不因缺少控制器而自动采用普通交换行为              |
+| `protocols=OpenFlow13` | 使用 OpenFlow 1.3                                 |
+| `--arp`                | 预先设置主机间的静态邻居记录，排除 ARP 查询的影响 |
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller none --mac --arp
+[sudo: authenticate] Password:       
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) 
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+
+*** Starting 1 switches
+s1 ...
+*** Starting CLI:
+```
+
+出现 `mininet>` 后，**逐条执行**：
+
+```shell
+sh ovs-vsctl get-fail-mode s1
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+h1 ping -c 1 -W 2 10.0.0.2
+```
+
+前两条检查模式与流表；最后一条发送一次 ping，最多等待回复 2 秒。
+
+```shell
+mininet> sh ovs-vsctl get-fail-mode s1
+secure
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+mininet> h1 ping -c 1 -W 2 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+
+--- 10.0.0.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+```
+
+这说明：**即使主机知道对方的 MAC，交换机没有转发规则，通信仍然不通。**当前流表为空，也没有配置上送控制器的规则，未匹配帧会被丢弃。
+
+现在只添加一条“发往 h2”的规则。在 `mininet>` 下执行：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,dl_dst=00:00:00:00:00:02,actions=output:2"
+```
+
+它对应之前学过的“匹配条件 → 动作”：
+
+| 部分                       | 含义                    |
+| -------------------------- | ----------------------- |
+| `priority=100`             | 规则优先级为 100        |
+| `dl_dst=00:00:00:00:00:02` | 匹配目的 MAC 为 h2 的帧 |
+| `actions=output:2`         | 从 s1 的端口 2 发出     |
+
+```shell
+mininet> h1 ping -c 1 -W 2 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+
+--- 10.0.0.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=39.120s, table=0, n_packets=1, n_bytes=98, priority=100,dl_dst=00:00:00:00:00:02 actions=output:"s1-eth2"
+```
+
+这次出现了关键变化：**ping 仍未收到回复，但去 h2 的规则已经命中了。**
+
+流表中的：
+
+```shell
+n_packets=1
+actions=output:"s1-eth2"
+```
+
+表示有 **1 个包匹配了这条规则**，规则指定从连接 h2 的接口发出。计数器证明规则被命中，但它本身不是 h2 收包的直接证据。
+
+现在补上返回方向：目的 MAC 是 h1，就从端口 1 发出。
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,dl_dst=00:00:00:00:00:01,actions=output:1"
+```
+
+然后执行：
+
+```
+h1 ping -c 1 -W 2 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+接下来我们检查：**双向规则齐全后，ping 是否成功，以及两条规则的计数器是否增加。**
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,dl_dst=00:00:00:00:00:01,actions=output:1"
+mininet> h1 ping -c 1 -W 2 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.519 ms
+
+--- 10.0.0.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.519/0.519/0.519/0.000 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=150.670s, table=0, n_packets=2, n_bytes=196, priority=100,dl_dst=00:00:00:00:00:02 actions=output:"s1-eth2"
+ cookie=0x0, duration=19.132s, table=0, n_packets=1, n_bytes=98, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+```
+
+**成功！你已经完成了第一次手动下发 OpenFlow 转发规则的实验。**
+
+三步结果可以对照起来：
+
+| 流表状态           | ping 结果               |
+| ------------------ | ----------------------- |
+| 没有规则           | 失败                    |
+| 只有发往 h2 的规则 | 失败，去向规则命中 1 次 |
+| 补齐发往 h1 的规则 | 成功，两条规则都有命中  |
+
+最后一次 ping 中：
+
+```
+请求：h1 → s1 → h2，命中“目的 h2 → 端口2”
+回复：h2 → s1 → h1，命中“目的 h1 → 端口1”
+```
+
+所以去 h2 的计数从 **1 增至 2**，去 h1 的计数变成 **1**。
+
+接下来验证：**转发规则仍然存在，能否用高优先级规则阻止通信？**
+
+在当前 `mininet>` 下执行：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=200,dl_dst=00:00:00:00:00:02,actions=drop"
+```
+
+这条新规则是：
+
+```
+优先级 200：目的 MAC 是 h2 → 丢弃
+```
+
+原来的规则仍保留：
+
+```
+优先级 100：目的 MAC 是 h2 → 从端口 2 发出
+```
+
+然后逐条执行：
+
+```shell
+h1 ping -c 1 -W 2 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+重点看：**ping 是否成功，以及优先级 200 的规则是否出现命中计数。**
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=200,dl_dst=00:00:00:00:00:02,actions=drop"
+mininet> h1 ping -c 1 -W 2 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+
+--- 10.0.0.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=588.831s, table=0, n_packets=2, n_bytes=196, priority=100,dl_dst=00:00:00:00:00:02 actions=output:"s1-eth2"
+ cookie=0x0, duration=457.293s, table=0, n_packets=1, n_bytes=98, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+ cookie=0x0, duration=20.812s, table=0, n_packets=1, n_bytes=98, priority=200,dl_dst=00:00:00:00:00:02 actions=drop
+```
+
+这次的计数很清楚：
+
+| 规则                         | 测试前 → 测试后 |
+| ---------------------------- | --------------- |
+| 优先级 100，发往 h2          | 2 → 2           |
+| 优先级 100，返回 h1          | 1 → 1           |
+| 优先级 200，丢弃发往 h2 的帧 | 0 → 1           |
+
+说明这个帧**匹配成功，但执行了高优先级规则的丢弃动作**，没有再执行低优先级转发规则。
+
+现在只删除刚添加的丢弃规则：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 --strict del-flows s1 "table=0,priority=200,dl_dst=00:00:00:00:00:02"
+```
+
+`--strict` 要求匹配指定的条件和优先级，保留原来的两条转发规则。
+
+再执行：
+
+```shell
+h1 ping -c 1 -W 2 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+把输出发来。预期通信恢复，去 h2 和返回 h1 的计数各增加 1。
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 --strict del-flows s1 "table=0,priority=200,dl_dst=00:00:00:00:00:02"
+mininet> h1 ping -c 1 -W 2 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.308 ms
+
+--- 10.0.0.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.308/0.308/0.308/0.000 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=723.801s, table=0, n_packets=3, n_bytes=294, priority=100,dl_dst=00:00:00:00:00:02 actions=output:"s1-eth2"
+ cookie=0x0, duration=592.263s, table=0, n_packets=2, n_bytes=196, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+```
+
+**恢复成功，整组对照完成了。**
+
+- 优先级 200 的丢弃规则已消失。
+- ping 恢复成功。
+- 去 h2 的计数 **2 → 3**，返回 h1 的计数 **1 → 2**，与一次往返对应。
+
+本次实验的分工是：
+
+```
+我们用命令下发规则
+        ↓
+交换机 s1 匹配规则，选择最高优先级，执行动作
+```
+
+所以完整解释是：**交换机选中高优先级丢弃规则，通信失败；原来的低优先级转发规则仍在，删除丢弃规则后，交换机重新选中转发规则，通信恢复。**
+
+这正对应之前学过的：**查表、选择规则和执行动作都属于数据平面。**
+
+### 实验二
+
+**`hard_timeout`（硬超时）**：
+
+> 给规则设置 `hard_timeout=15`，表示规则安装约 15 秒后会过期，期间即使持续有数据命中，也不会因此续期。[OVS 官方说明](https://www.openvswitch.org/support/dist-docs/ovs-ofctl.8.html)
+
+执行：
+
+```
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller none --mac --arp
+```
+
+进入新的 `mininet>` 后，逐条执行：
+
+```shell
+net
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller none --mac --arp
+[sudo: authenticate] Password:       
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) 
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+
+*** Starting 1 switches
+s1 ...
+*** Starting CLI:
+mininet> net
+h1 h1-eth0:s1-eth1
+h2 h2-eth0:s1-eth2
+s1 lo:  s1-eth1:h1-eth0 s1-eth2:h2-eth0
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+mininet> 
+```
+
+拓扑正确，流表也是空的。现在让**去 h2 的规则在 15 秒后过期**，返回 h1 的规则保持有效，这样便于判断是哪条规则影响了通信。
+
+先添加返回规则：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,dl_dst=00:00:00:00:00:01,actions=output:1"
+```
+
+接下来先读完：执行下面的限时规则后，**立即输入下一条 ping 命令**。ping 会持续约 25 秒，期间观察回复是否中断。
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,hard_timeout=15,dl_dst=00:00:00:00:00:02,actions=output:2"
+
+h1 ping -c 25 -i 1 -W 1 10.0.0.2
+```
+
+ping 结束后再查看流表：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+**预期**：前面能收到回复，规则过期后不再收到；最后流表只剩返回 h1 的规则。
+
+```shell
+mininet> h1 ping -c 25 -i 1 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.334 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.059 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.123 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.065 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.122 ms
+
+--- 10.0.0.2 ping statistics ---
+25 packets transmitted, 5 received, 80% packet loss, time 24580ms
+rtt min/avg/max/mdev = 0.059/0.140/0.334/0.100 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=98.364s, table=0, n_packets=5, n_bytes=490, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+```
+
+**硬超时实验符合预期。**
+
+- 前 5 次 ping 收到回复，之后没有回复。
+- 去 h2 的限时规则已消失。
+- 返回 h1 的规则仍在，计数正好是 **5 个包**。
+
+注意：**15 秒从规则安装时开始计算，不是从 ping 开始计算。**因此，只收到 5 次回复不代表超时被设置成了 5 秒。
+
+规则到期后，去 h2 的请求无法再按这条规则转发；即使返回规则仍在，也不足以完成往返。
+
+下一步可以对比 **空闲超时 `idle_timeout`**：它关注“连续多久没有命中”，有新数据命中时会重新计算空闲时间。
+
+**`idle_timeout=10` 表示：连续约 10 秒没有数据命中，规则才会过期。**每次命中都会重新计算空闲时间。[OVS 官方说明](https://www.openvswitch.org/support/dist-docs/ovs-ofctl.8.html)
+
+沿用当前拓扑，返回 h1 的规则仍保留。先读完下面步骤，再开始操作。
+
+添加去 h2 的规则，这次不设硬超时：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=100,idle_timeout=10,hard_timeout=0,dl_dst=00:00:00:00:00:02,actions=output:2"
+```
+
+**紧接着**执行：
+
+```shell
+h1 ping -c 15 -i 1 -W 1 10.0.0.2
+```
+
+它每秒发一次，持续约 14 秒。虽然总时长超过 10 秒，但相邻命中间隔不到 10 秒，预期可以持续通信。
+
+结束后逐条执行：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+sh sleep 12
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+预期第一次查看时去 h2 的规则仍在；停止发包、空闲 12 秒后，第二次查看时它已消失。
+
+```shell
+mininet> h1 ping -c 15 -i 1 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.229 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.076 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.172 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.127 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.119 ms
+64 bytes from 10.0.0.2: icmp_seq=6 ttl=64 time=0.114 ms
+64 bytes from 10.0.0.2: icmp_seq=7 ttl=64 time=0.091 ms
+64 bytes from 10.0.0.2: icmp_seq=8 ttl=64 time=0.120 ms
+64 bytes from 10.0.0.2: icmp_seq=9 ttl=64 time=0.127 ms
+64 bytes from 10.0.0.2: icmp_seq=10 ttl=64 time=0.118 ms
+64 bytes from 10.0.0.2: icmp_seq=11 ttl=64 time=0.061 ms
+64 bytes from 10.0.0.2: icmp_seq=12 ttl=64 time=0.137 ms
+64 bytes from 10.0.0.2: icmp_seq=13 ttl=64 time=0.112 ms
+64 bytes from 10.0.0.2: icmp_seq=14 ttl=64 time=0.116 ms
+64 bytes from 10.0.0.2: icmp_seq=15 ttl=64 time=0.097 ms
+
+--- 10.0.0.2 ping statistics ---
+15 packets transmitted, 15 received, 0% packet loss, time 14299ms
+rtt min/avg/max/mdev = 0.061/0.121/0.229/0.038 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=595.553s, table=0, n_packets=20, n_bytes=1960, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+mininet> sh sleep 12
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=630.763s, table=0, n_packets=20, n_bytes=1960, priority=100,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+```
+
+**5 次 ping 全部成功，持续约 14.3 秒**，这符合空闲超时的预期：虽然总时长超过 10 秒，但每秒都有一次命中，空闲计时不断刷新。
+
+第一次查表时规则已经消失，**可能是 ping 结束到查表之间已空闲超过 10 秒**。我们没有记录这段间隔，所以不能精确判断过期时刻；第二次查询也只能确认它仍然不在。
+
+两种超时的区别是：
+
+| 设置              | 持续命中的作用                       |
+| ----------------- | ------------------------------------ |
+| `hard_timeout=10` | 不续期，到期仍删除                   |
+| `idle_timeout=10` | 刷新空闲计时，连续空闲约 10 秒才删除 |
+
+### 实验三
+
+这次使用 **OVS 官方测试控制器 `ovs-testcontroller`**。它能学习 MAC 地址并下发流规则，适合先观察控制器参与转发，而且不依赖 Python 控制器框架。
+
+接下来的分工变为：
+
+```
+控制器：接收上报，决定并下发规则
+交换机：匹配规则，执行转发
+```
+
+如果没有退出，先在当前 `mininet>` 输入：
+
+```shell
+exit
+```
+
+回到 **Ubuntu 普通终端**后，逐条执行：
+
+```shell
+sudo apt update
+sudo apt install --no-install-recommends openvswitch-testcontroller
+```
+
+安装完成后检查：
+
+```shell
+ovs-testcontroller --version
+command -v ovs-testcontroller
+```
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ ovs-testcontroller --version
+ovs-testcontroller (Open vSwitch) 3.7.1
+OpenFlow versions 0x1:0x6
+shanpao@shanpao-VMware20-1:~/Desktop$ command -v ovs-testcontroller
+/usr/bin/ovs-testcontroller
+```
+
+安装成功，控制器版本是 **3.7.1**。接下来准备一个专门运行控制器的终端，称为**终端 A**。
+
+先在 Ubuntu 普通终端执行：
+
+```
+sudo ss -ltnp 'sport = :6653'
+```
+
+- 如果只有表头、没有监听记录，继续下面步骤。
+- 如果有监听记录，先把输出发来，避免重复启动。
+
+端口空闲时执行：
+
+```
+ovs-testcontroller -O OpenFlow13 --unixctl=none -vconsole:dbg ptcp:6653:127.0.0.1
+```
+
+这条命令的含义：
+
+| 部分                  | 作用                                       |
+| --------------------- | ------------------------------------------ |
+| `-O OpenFlow13`       | 使用 OpenFlow 1.3                          |
+| `ptcp:6653:127.0.0.1` | 只在 Ubuntu 本机的 6653 端口等待交换机连接 |
+| `-vconsole:dbg`       | 在终端显示详细日志                         |
+| `--unixctl=none`      | 暂不创建额外的运行时管理套接字             |
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ sudo ss -ltnp 'sport = :6653'
+State    Recv-Q    Send-Q       Local Address:Port       Peer Address:Port    Process    
+shanpao@shanpao-VMware20-1:~/Desktop$ ovs-testcontroller -O OpenFlow13 --unixctl=none -vconsole:dbg ptcp:6653:127.0.0.1
+```
+
+这是正常的等待状态，控制器暂时还没有交换机连接。**保留终端 A。**
+
+另开一个 Ubuntu 终端，称为**终端 B**，执行：
+
+```shell
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+```
+
+这次把原来的 `--controller none` 换成了 `remote`：让交换机通过 OpenFlow 连接指定地址的控制器。这里的 “remote” 指控制器由 Mininet 外部运行，仍可以位于同一台 Ubuntu。
+
+出现 `mininet>` 后，先不 ping，执行：
+
+```shell
+sh ovs-vsctl get-controller s1
+sh ovs-vsctl --columns=target,is_connected list Controller
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+[sudo: authenticate] Password:       
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) 
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s1 ...
+*** Starting CLI:
+mininet> sh ovs-vsctl get-controller s1
+ptcp:6654
+tcp:127.0.0.1:6653
+mininet> sh ovs-vsctl --columns=target,is_connected list Controller
+target              : "tcp:127.0.0.1:6653"
+is_connected        : true
+
+target              : "ptcp:6654"
+is_connected        : false
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=26.309s, table=0, n_packets=14, n_bytes=1172, priority=0 actions=CONTROLLER:128
+```
+
+**控制器连接成功了。**关键证据是：
+
+```shell
+target       : "tcp:127.0.0.1:6653"
+is_connected : true
+```
+
+另一个 `ptcp:6654` 是交换机等待其他管理连接的监听入口，显示 `false` 不代表上面的控制器连接失败。
+
+现在流表中还有一条自动安装的规则：
+
+```shell
+priority=0 actions=CONTROLLER:128
+```
+
+它是**兜底上送规则**：没有更高优先级规则匹配时，把数据上送控制器。`128` 是请求上送的数据字节数上限，**不是端口号**。
+
+已有的 `n_packets=14` 表示它被命中了 14 次；我们还没核对报文内容，不能直接说这些都是 ping。
+
+在**终端 B 的 `mininet>`** 下依次执行：
+
+```shell
+h1 ping -c 3 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+mininet> h1 ping -c 3 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=2.09 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.225 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.043 ms
+
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2043ms
+rtt min/avg/max/mdev = 0.043/0.784/2.085/0.922 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=9.787s, table=0, n_packets=2, n_bytes=196, idle_timeout=60, priority=1,icmp,in_port="s1-eth1",vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:01,dl_dst=00:00:00:00:00:02,nw_src=10.0.0.1,nw_dst=10.0.0.2,nw_tos=0,icmp_type=8,icmp_code=0 actions=output:"s1-eth2"
+ cookie=0x0, duration=9.787s, table=0, n_packets=2, n_bytes=196, idle_timeout=60, priority=1,icmp,in_port="s1-eth2",vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:02,dl_dst=00:00:00:00:00:01,nw_src=10.0.0.2,nw_dst=10.0.0.1,nw_tos=0,icmp_type=0,icmp_code=0 actions=output:"s1-eth1"
+ cookie=0x0, duration=212.057s, table=0, n_packets=22, n_bytes=1788, priority=0 actions=CONTROLLER:128
+```
+
+**控制器自动下发规则成功了。**你没有手动添加转发规则，但 ping 全部成功，流表新增了两条具体规则：
+
+| 匹配的数据                       | 动作          |
+| -------------------------------- | ------------- |
+| h1→h2，`icmp_type=8`（回显请求） | 从端口 2 发出 |
+| h2→h1，`icmp_type=0`（回显回复） | 从端口 1 发出 |
+
+它们都是 **优先级 1、空闲超时 60 秒**。优先级 0 的上送规则仍保留，所以处理关系是：
+
+```
+匹配具体规则 → 交换机直接转发
+没有具体规则匹配 → 命中兜底规则，上送控制器
+```
+
+每条具体规则计数为 **2**，而 ping 发了 **3** 次，并不矛盾：初始数据可以通过控制器的 `Packet-Out` 处理。
+
+**如果停止通信超过 60 秒，两条具体规则都过期了，但兜底上送规则仍在、控制器也正常运行，再 ping 一定会像之前的无控制器实验那样持续失败吗？为什么？**
+
+回答：不会，因为兜底上送规则仍在、控制器也正常运行，再ping会将消息上传到控制器处理
+
+正确。具体规则过期后，新帧会匹配**兜底上送规则**，触发 Packet-In；控制器可以处理它，并重新下发转发规则。
+
+因此，这和之前“没有控制器、没有上送规则”的实验不同。这里具备恢复转发的机制，但**首个 ping 是否成功仍取决于处理时延等因素**，不能保证完全不丢包。
+
+
+
+**“控制消息日志”观察**
+
+先准备**带日志文件的控制器**。
+
+如果旧实验还在运行，先在终端 B 的 `mininet>` 输入 `exit`，再到终端 A 按 `Ctrl+C`。已经停止的就跳过。
+
+在**终端 A 的普通提示符**下执行：
+
+```shell
+ovs-testcontroller -O OpenFlow13 --unixctl=none --log-file=/tmp/sdn-controller-messages.log -vconsole:info -vfile:dbg ptcp:6653:127.0.0.1
+```
+
+与之前相比，只改变了日志设置：
+
+- 终端显示简要信息；
+- 详细消息写入 `/tmp/sdn-controller-messages.log`。
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ ovs-testcontroller -O OpenFlow13 --unixctl=none --log-file=/tmp/sdn-controller-messages.log -vconsole:info -vfile:dbg ptcp:6653:127.0.0.1
+2026-10-20T06:30:07Z|00001|vlog|INFO|opened log file /tmp/sdn-controller-messages.log
+```
+
+日志文件已成功打开，保留**终端 A**运行。
+
+在**终端 B 的普通提示符**下启动拓扑：
+
+```shell
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+```
+
+出现 `mininet>` 后，逐条执行：
+
+```shell
+sh ovs-vsctl --columns=target,is_connected list Controller
+h1 ping -c 3 -W 1 10.0.0.2
+sh grep -nEi 'packet.?in|flow.?mod|packet.?out' /tmp/sdn-controller-messages.log | tail -n 25
+```
+
+最后一条只筛选近期的三类消息：
+
+| 消息       | 方向与作用                                      |
+| ---------- | ----------------------------------------------- |
+| Packet-In  | 交换机 → 控制器，上报数据                       |
+| Flow-Mod   | 控制器 → 交换机，修改流表                       |
+| Packet-Out | 控制器 → 交换机，指示如何处理携带或引用的数据包 |
+
+```shell
+mininet> sh ovs-vsctl --columns=target,is_connected list Controller
+target              : "ptcp:6654"
+is_connected        : false
+
+target              : "tcp:127.0.0.1:6653"
+is_connected        : true
+mininet> h1 ping -c 3 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.07 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.176 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.124 ms
+
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2009ms
+rtt min/avg/max/mdev = 0.124/0.456/1.068/0.433 ms
+mininet> sh grep -nEi 'packet.?in|flow.?mod|packet.?out' /tmp/sdn-controller-messages.log | tail -n 25
+69:2026-10-20T06:31:30.103Z|00051|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0xc): in_port=2 actions=FLOOD data_len=90
+71:2026-10-20T06:31:30.103Z|00052|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=90 in_port=1 (via no_match) data_len=90 (unbuffered)
+73:2026-10-20T06:31:30.103Z|00053|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0xd): in_port=1 actions=FLOOD data_len=90
+75:2026-10-20T06:31:30.103Z|00054|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=1 (via no_match) data_len=70 (unbuffered)
+77:2026-10-20T06:31:30.103Z|00055|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0xe): in_port=1 actions=FLOOD data_len=70
+80:2026-10-20T06:31:30.935Z|00057|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=90 in_port=1 (via no_match) data_len=90 (unbuffered)
+82:2026-10-20T06:31:30.935Z|00058|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0xf): in_port=1 actions=FLOOD data_len=90
+85:2026-10-20T06:31:33.047Z|00060|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=2 (via no_match) data_len=70 (unbuffered)
+87:2026-10-20T06:31:33.047Z|00061|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x10): in_port=2 actions=FLOOD data_len=70
+90:2026-10-20T06:31:33.879Z|00063|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=1 (via no_match) data_len=70 (unbuffered)
+92:2026-10-20T06:31:33.880Z|00064|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x11): in_port=1 actions=FLOOD data_len=70
+98:2026-10-20T06:31:40.919Z|00069|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=2 (via no_match) data_len=70 (unbuffered)
+100:2026-10-20T06:31:40.919Z|00070|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x12): in_port=2 actions=FLOOD data_len=70
+103:2026-10-20T06:31:41.943Z|00072|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=1 (via no_match) data_len=70 (unbuffered)
+105:2026-10-20T06:31:41.943Z|00073|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x13): in_port=1 actions=FLOOD data_len=70
+114:2026-10-20T06:31:54.464Z|00081|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=1 (via no_match) data_len=98 (unbuffered)
+116:2026-10-20T06:31:54.464Z|00082|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_FLOW_MOD (OF1.3) (xid=0x14): ADD priority=1,icmp,in_port=1,vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:01,dl_dst=00:00:00:00:00:02,nw_src=10.0.0.1,nw_dst=10.0.0.2,nw_tos=0,icmp_type=8,icmp_code=0 idle:60 actions=output:2
+117:2026-10-20T06:31:54.464Z|00083|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x15): in_port=1 actions=output:2 data_len=98
+120:2026-10-20T06:31:54.465Z|00085|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=2 (via no_match) data_len=98 (unbuffered)
+122:2026-10-20T06:31:54.465Z|00086|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_FLOW_MOD (OF1.3) (xid=0x16): ADD priority=1,icmp,in_port=2,vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:02,dl_dst=00:00:00:00:00:01,nw_src=10.0.0.2,nw_dst=10.0.0.1,nw_tos=0,icmp_type=0,icmp_code=0 idle:60 actions=output:1
+123:2026-10-20T06:31:54.465Z|00087|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x17): in_port=2 actions=output:1 data_len=98
+126:2026-10-20T06:31:56.791Z|00089|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=2 (via no_match) data_len=70 (unbuffered)
+128:2026-10-20T06:31:56.791Z|00090|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x18): in_port=2 actions=FLOOD data_len=70
+131:2026-10-20T06:31:57.815Z|00092|vconn|DBG|tcp:127.0.0.1:51592: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=70 in_port=1 (via no_match) data_len=70 (unbuffered)
+133:2026-10-20T06:31:57.815Z|00093|vconn|DBG|tcp:127.0.0.1:51592: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x19): in_port=1 actions=FLOOD data_len=70
+```
+
+**这次直接观察到了三类控制消息。**先只看日志第 **114、116、117 行**，它们对应 h1→h2 的请求：
+
+| 消息       | 日志关键内容                            | 作用                                          |
+| ---------- | --------------------------------------- | --------------------------------------------- |
+| Packet-In  | `received ... in_port=1 (via no_match)` | 交换机没有具体规则匹配，把数据上报控制器      |
+| Flow-Mod   | `sent ... ADD ... actions=output:2`     | 控制器安装“这类数据从端口 2 发出”的规则       |
+| Packet-Out | `sent ... actions=output:2 data_len=98` | 控制器指示交换机把当前上报的数据从端口 2 发出 |
+
+这里 `received` 和 `sent` 都是**站在控制器的角度**说的。
+
+第 **120、122、123 行**则对应 h2→h1 的回复，过程相同，出口变成端口 1。
+
+关键区别是：
+
+```
+Flow-Mod：改流表，让后续匹配的数据有规则可用。
+Packet-Out：指示交换机处理当前这份数据。
+```
+
+所以，“安装规则”和“把当前包发出去”是两个不同操作；这次日志把它们分别显示出来了。
+
+关键是分清两个东西：**当前这个包**，以及**交换机里的规则表**。
+
+假设 h1 发出的第一个 ping 请求叫 **P1**。
+
+**第一步：P1 到达交换机，但没有具体规则匹配。**
+
+交换机命中兜底规则，发送 Packet-In，把 P1 的内容上报给控制器：
+
+```
+h1 发出 P1 → 交换机 → Packet-In → 控制器
+```
+
+这次日志写着：
+
+```
+unbuffered
+```
+
+意思是：**交换机没有为这个上报包提供一个可供控制器后续引用的缓存编号。**因此，不能假定交换机还存着一份 P1，等装完规则后自动接着转发。
+
+**第二步：控制器发送 Flow-Mod，安装规则。**
+
+控制器决定去 h2 的数据应该从端口 2 发出，于是发送：
+
+```
+Flow-Mod：添加“符合这些条件 → 从端口 2 发出”
+```
+
+交换机的规则表发生了变化：
+
+| 原来         | 现在                       |
+| ------------ | -------------------------- |
+| 没有对应规则 | 有了“去 h2 → 端口 2”的规则 |
+
+但这个动作处理的是**规则表**。它本身不能证明 P1 已经被发送出去。
+
+之后到来的 P2、P3，可以匹配这条规则直接转发：
+
+```
+P2 到达 → 查到规则 → 从端口 2 发出
+P3 到达 → 查到规则 → 从端口 2 发出
+```
+
+**第三步：控制器用 Packet-Out 处理当前的 P1。**
+
+本次控制器另外发送了：
+
+```
+Packet-Out：携带 P1，要求交换机从端口 2 发出
+```
+
+你的日志里：
+
+```
+actions=output:2 data_len=98
+```
+
+表示这条消息携带了 **98 字节的数据**，并指定出口为端口 2。
+
+把整个过程放在一起：
+
+```
+当前包 P1：
+上报控制器 → 控制器用 Packet-Out 把它交回交换机发送
+
+后续包 P2、P3：
+到达交换机 → 匹配 Flow-Mod 安装的规则 → 直接转发
+```
+
+**第一个包 P1**：
+
+**① P1 到达时，转发规则还不存在。**
+
+```
+P1 到达交换机 → 找不到具体转发规则 → Packet-In 上报控制器
+```
+
+注意：**P1 此时没有匹配到后来才安装的转发规则。**
+
+**② 控制器发送 Flow-Mod，给交换机加规则。**
+
+```
+规则表新增：“目的为 h2 → 从端口 2 发出”
+```
+
+你说的“匹配成功就能按规则发出去”，适用于**现在到达并查表的包**。但 **Flow-Mod 不会仅因为规则装好了，就自动让之前上报的 P1 再查一次表。**
+
+**③ 所以控制器另外发送 Packet-Out，处理 P1。**
+
+在你这次日志里，它的意思是：
+
+> “交换机，这是刚才那个 P1 的数据，请你现在从端口 2 发出去。”
+
+**Packet-Out 是控制器发给交换机的指令，真正把业务帧发给 h2 的仍然是交换机。**
+
+随后，第二个包 P2 到达：
+
+```
+P2 到达交换机 → 已有规则 → 匹配成功 → 直接从端口 2 发出
+```
+
+这时不需要再上报，也不需要再等 Packet-Out。
+
+可以把两者记成：
+
+| 消息           | 本次实验里的作用               |
+| -------------- | ------------------------------ |
+| **Flow-Mod**   | 给交换机写下处理规则           |
+| **Packet-Out** | 告诉交换机怎样处理当前这一个包 |
+
+还有一点：“匹配成功”表示选中了规则；要看动作是什么。之前你已经验证过，**匹配到 `drop` 规则也会被丢弃**，并不保证发出或收到。
+
+**规则不会生成数据包，也不会自动把之前上报的包重新送入转发流程。**
+
+所以这次实验中：
+
+- **Flow-Mod**：装好规则，供后续到达的包匹配。
+- **Packet-Out**：携带刚才的 P1，并指示交换机从端口 2 发出。
+- **后续的 P2、P3**：直接匹配已有规则，由交换机转发，不再需要 Packet-Out。
+
+这次只改变控制器的一个行为：**处理上报的包，但不安装具体转发规则**。
+
+正常情况下，控制器会：
+
+```
+收到 Packet-In → 下发 Flow-Mod ＋ 用 Packet-Out 处理当前包
+```
+
+加上 `--noflow` 后，它仍可发送 Packet-Out，但不再安装具体转发规则。[OVS 官方说明](https://www.openvswitch.org/support/dist-docs/ovs-testcontroller.8.html)
+
+先收尾旧实验：
+
+1. **终端 B**：在 `mininet>` 输入 `exit`。
+2. **终端 A**：按 `Ctrl+C` 停止旧控制器。
+
+然后在**终端 A**启动新控制器：
+
+```shell
+ovs-testcontroller -O OpenFlow13 --noflow --unixctl=none --log-file=/tmp/sdn-controller-noflow.log -vconsole:info -vfile:dbg ptcp:6653:127.0.0.1
+```
+
+在**终端 B**重建拓扑：
+
+```shell
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+```
+
+出现 `mininet>` 后，逐条执行：
+
+```shell
+h1 ping -c 3 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+mininet> h1 ping -c 3 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.21 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.519 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=1.51 ms
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2046ms
+rtt min/avg/max/mdev = 0.519/1.078/1.512/0.415 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=21.404s, table=0, n_packets=20, n_bytes=1760, priority=0 actions=CONTROLLER:128
+```
+
+这正好体现了 **Packet-Out 的作用**：**没有具体转发规则，也可以由控制器逐包指示交换机转发。**
+
+本次预期路径是：
+
+```
+每个请求或回复到达交换机
+        ↓
+兜底规则 → Packet-In 上报控制器
+        ↓
+控制器发送 Packet-Out
+        ↓
+交换机按这一次的指令发出该包
+```
+
+Packet-Out 的指令只处理这份数据，**不会自动留下供下一包使用的转发规则**，因此下一包还需要再次上报。
+
+现在用日志核实。在 `mininet>` 执行：
+
+```shell
+sh grep -nE 'OFPT_PACKET_IN.*total_len=98|OFPT_PACKET_OUT.*data_len=98' /tmp/sdn-controller-noflow.log | tail -n 12
+```
+
+```shell
+mininet> sh grep -nE 'OFPT_PACKET_IN.*total_len=98|OFPT_PACKET_OUT.*data_len=98' /tmp/sdn-controller-noflow.log | tail -n 12
+110:2026-10-20T07:58:44.194Z|00076|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=1 (via no_match) data_len=98 (unbuffered)
+112:2026-10-20T07:58:44.194Z|00077|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x13): in_port=1 actions=output:2 data_len=98
+115:2026-10-20T07:58:44.194Z|00079|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=2 (via no_match) data_len=98 (unbuffered)
+117:2026-10-20T07:58:44.194Z|00080|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x14): in_port=2 actions=output:1 data_len=98
+120:2026-10-20T07:58:45.195Z|00082|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=1 (via no_match) data_len=98 (unbuffered)
+122:2026-10-20T07:58:45.195Z|00083|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x15): in_port=1 actions=output:2 data_len=98
+125:2026-10-20T07:58:45.196Z|00085|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=2 (via no_match) data_len=98 (unbuffered)
+127:2026-10-20T07:58:45.196Z|00086|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x16): in_port=2 actions=output:1 data_len=98
+135:2026-10-20T07:58:46.239Z|00091|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=1 (via no_match) data_len=98 (unbuffered)
+137:2026-10-20T07:58:46.240Z|00092|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x18): in_port=1 actions=output:2 data_len=98
+140:2026-10-20T07:58:46.240Z|00094|vconn|DBG|tcp:127.0.0.1:40870: received: OFPT_PACKET_IN (OF1.3) (xid=0x0): cookie=0x0 total_len=98 in_port=2 (via no_match) data_len=98 (unbuffered)
+142:2026-10-20T07:58:46.240Z|00095|vconn|DBG|tcp:127.0.0.1:40870: sent (Success): OFPT_PACKET_OUT (OF1.3) (xid=0x19): in_port=2 actions=output:1 data_len=98
+```
+
+这次能直接看出 **Packet-Out 是一次性的发包指令**。
+
+三轮日志都重复了同样的过程：
+
+| 时间       | 请求方向                            | 回复方向                            |
+| ---------- | ----------------------------------- | ----------------------------------- |
+| `07:58:44` | 入端口 1 → 上报 → 指示从端口 2 发出 | 入端口 2 → 上报 → 指示从端口 1 发出 |
+| `07:58:45` | 同上                                | 同上                                |
+| `07:58:46` | 同上                                | 同上                                |
+
+**上一轮已经发送过 Packet-Out，下一轮仍然再次出现 Packet-In。**结合流表中没有具体转发规则，这说明 Packet-Out 没有替后续包留下转发规则。
+
+现在这样区分：
+
+- **Packet-Out**：“把这份数据从端口 2 发出去。”
+- **Flow-Mod**：“在流表中加入规则，让以后符合条件的数据从端口 2 发出去。”
+
+现在已验证两种方式：
+
+| 方式           | 后续匹配包怎样转发                     |
+| -------------- | -------------------------------------- |
+| 安装具体规则   | 交换机直接按规则转发                   |
+| 不安装具体规则 | 每次上报，控制器用 Packet-Out 指示转发 |
+
+
+
+**比较两种方式的 Packet-In 数量**
+
+先测当前的 **`--noflow` 模式**：固定发送 5 次 ping，比较前后的 Packet-In 数量，不提高发送速率。
+
+在**终端 B 的 `mininet>`** 下，逐条执行：
+
+**① 记录测试前的计数：**
+
+```
+sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-noflow.log
+```
+
+它统计日志中符合本次 ping 帧长度、来自端口 1 或 2 的 Packet-In。
+
+**② 发送 5 次 ping：**
+
+```
+h1 ping -c 5 -i 1 -W 1 10.0.0.2
+```
+
+**③ 再读一次计数：**
+
+```
+sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-noflow.log
+```
+
+我们关注的是：
+
+```
+本轮新增上报数 = 测试后计数 − 测试前计数
+```
+
+若请求和回复都逐包上报，**5 次成功的 ping 预期新增 10 条 Packet-In**，因为一次 ping 包含一个请求和一个回复。
+
+```shell
+mininet> sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-noflow.log
+6
+mininet> h1 ping -c 5 -i 1 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.01 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.366 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=1.46 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.710 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=1.52 ms
+--- 10.0.0.2 ping statistics ---
+5 packets transmitted, 5 received, 0% packet loss, time 4079ms
+rtt min/avg/max/mdev = 0.366/1.013/1.521/0.439 ms
+mininet> sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-noflow.log
+16
+```
+
+第一组结果明确：
+
+```
+新增 Packet-In = 16 − 6 = 10 条
+```
+
+对应 **5 个请求＋5 个回复**。这说明能 ping 通，但每轮通信都需要控制器参与。
+
+现在准备第二组：
+
+**允许控制器安装具体规则**。
+
+先在终端 B 输入 `exit`，再到终端 A 按 `Ctrl+C`。
+
+在**终端 A**执行，注意这次去掉了 `--noflow`，并换了日志文件：
+
+```
+ovs-testcontroller -O OpenFlow13 --unixctl=none --log-file=/tmp/sdn-controller-withflows.log -vconsole:info -vfile:dbg ptcp:6653:127.0.0.1
+```
+
+在**终端 B**启动拓扑：
+
+```
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+```
+
+出现 `mininet>` 后执行：
+
+```
+h1 ping -c 3 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+这 3 次是**预热通信，用于建立规则**，不计入后面正式比较的 5 次 ping。
+
+预热成功，两条 **优先级 1、空闲超时 60 秒**的具体规则都已建立。
+
+为了避免聊天期间规则过期，我们先再预热一次，随后连续完成计数。**先读完，再逐条执行，期间不要停留超过 60 秒。**
+
+**① 预热，不计入正式测试：**
+
+```shell
+h1 ping -c 2 -W 1 10.0.0.2
+```
+
+**② 读取测试前计数：**
+
+```shell
+sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-withflows.log
+```
+
+**③ 正式发送同样的 5 次 ping：**
+
+```shell
+h1 ping -c 5 -i 1 -W 1 10.0.0.2
+```
+
+**④ 读取测试后计数和流表：**
+
+```shell
+sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-withflows.log
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+mininet> h1 ping -c 2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.30 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.439 ms
+
+--- 10.0.0.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1003ms
+rtt min/avg/max/mdev = 0.439/0.867/1.295/0.428 ms
+mininet> sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-withflows.log
+4
+mininet> h1 ping -c 5 -i 1 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.364 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.035 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.157 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.130 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.068 ms
+
+--- 10.0.0.2 ping statistics ---
+5 packets transmitted, 5 received, 0% packet loss, time 4129ms
+rtt min/avg/max/mdev = 0.035/0.150/0.364/0.115 ms
+mininet> sh grep -cE 'received: OFPT_PACKET_IN .*total_len=98 in_port=[12] .*data_len=98' /tmp/sdn-controller-withflows.log
+4
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=23.457s, table=0, n_packets=6, n_bytes=588, idle_timeout=60, priority=1,icmp,in_port="s1-eth1",vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:01,dl_dst=00:00:00:00:00:02,nw_src=10.0.0.1,nw_dst=10.0.0.2,nw_tos=0,icmp_type=8,icmp_code=0 actions=output:"s1-eth2"
+ cookie=0x0, duration=23.456s, table=0, n_packets=6, n_bytes=588, idle_timeout=60, priority=1,icmp,in_port="s1-eth2",vlan_tci=0x0000/0x1fff,dl_src=00:00:00:00:00:02,dl_dst=00:00:00:00:00:01,nw_src=10.0.0.2,nw_dst=10.0.0.1,nw_tos=0,icmp_type=0,icmp_code=0 actions=output:"s1-eth1"
+ cookie=0x0, duration=1159.279s, table=0, n_packets=29, n_bytes=2334, priority=0 actions=CONTROLLER:128
+```
+
+**两组对照完成了：同样的业务量，产生了不同的上报量。**
+
+| 控制器模式       | 正式测试          | 新增 Packet-In |
+| ---------------- | ----------------- | -------------- |
+| 不安装具体规则   | 5 次 ping，全成功 | `16 − 6 = 10`  |
+| 已有有效具体规则 | 5 次 ping，全成功 | `4 − 4 = 0`    |
+
+第二组里，交换机直接匹配请求、回复规则并转发，因此这些包不必再次上报控制器。
+
+这就把之前的理论验证出来了：**控制器的上报负担，不只取决于业务包数量，还取决于这些包是否需要上送。**本次测的是上报数量，尚未测控制器的最大处理能力。
+
+**有有效具体规则时，交换机直接匹配并转发，不需要这轮控制器交互。**
+
+
+
+**OVS 的限速方式**
+
+这次只对 **h1 发往 h2 的 ping 请求，在上送控制器前限速**，观察合法请求是否也会被丢弃。每轮只发 10 个请求。
+
+我们使用 OpenFlow 的 **meter（计量限速器）**：超过设定速率的包可被丢弃。[OVS 官方说明](https://www.openvswitch.org/support/dist-docs/ovs-ofctl.8.html)
+
+先准备环境：
+
+1. **终端 B**：输入 `exit`。
+2. **终端 A**：按 `Ctrl+C`。
+3. 在**终端 A**启动不安装具体规则的控制器：
+
+```shell
+ovs-testcontroller -O OpenFlow13 --noflow --unixctl=none --log-file=/tmp/sdn-controller-meter.log -vconsole:info -vfile:dbg ptcp:6653:127.0.0.1
+```
+
+在**终端 B**重建拓扑：
+
+```shell
+sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+```
+
+出现 `mininet>` 后执行：
+
+```shell
+sh ovs-vsctl --columns=target,is_connected list Controller
+sh ovs-ofctl -O OpenFlow13 meter-features s1
+```
+
+```shell
+shanpao@shanpao-VMware20-1:~/Desktop$ sudo mn --topo single,2 --switch ovs,failMode=secure,protocols=OpenFlow13 --controller remote,ip=127.0.0.1,port=6653 --mac --arp
+[sudo: authenticate] Password:       
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) 
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s1 ...
+*** Starting CLI:
+mininet> sh ovs-vsctl --columns=target,is_connected list Controller
+target              : "tcp:127.0.0.1:6653"
+is_connected        : true
+
+target              : "ptcp:6654"
+is_connected        : false
+mininet> sh ovs-ofctl -O OpenFlow13 meter-features s1
+OFPST_METER_FEATURES reply (OF1.3) (xid=0x2):
+max_meter:200000 max_bands:1 max_color:0
+band_types: drop
+capabilities: kbps pktps burst stats
+```
+
+控制器已连接，交换机也支持我们需要的功能：
+
+- `pktps`：按每秒包数计量；
+- `drop`：丢弃超额包；
+- `stats`：查看计量与丢弃统计。
+
+先做**未限速基线**。在当前 `mininet>` 中逐条执行：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+```
+
+第一条确认流表状态；第二条发送 **10 个请求，间隔 0.2 秒，约每秒 5 个**。
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=171.199s, table=0, n_packets=20, n_bytes=1592, priority=0 actions=CONTROLLER:128
+mininet> h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.02 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=1.74 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.914 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.964 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.461 ms
+64 bytes from 10.0.0.2: icmp_seq=6 ttl=64 time=1.39 ms
+64 bytes from 10.0.0.2: icmp_seq=7 ttl=64 time=0.473 ms
+64 bytes from 10.0.0.2: icmp_seq=8 ttl=64 time=0.401 ms
+64 bytes from 10.0.0.2: icmp_seq=9 ttl=64 time=0.429 ms
+64 bytes from 10.0.0.2: icmp_seq=10 ttl=64 time=0.387 ms
+
+--- 10.0.0.2 ping statistics ---
+10 packets transmitted, 10 received, 0% packet loss, time 1842ms
+rtt min/avg/max/mdev = 0.387/0.817/1.738/0.447 ms
+```
+
+基线已确认：**10 发、10 收，没有丢包。**
+
+现在在 `mininet>` 中逐条执行。
+
+**① 创建限速器：每秒 1 个包，允许 1 个包的突发量，超额丢弃并记录统计。**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-meter s1 "meter=1,pktps,burst,stats,bands=type=drop,rate=1,burst_size=1"
+```
+
+**② 只让 h1→h2 的 ping 请求经过它，再上送控制器：**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0,actions=meter:1,CONTROLLER:128"
+```
+
+处理顺序是：
+
+```
+匹配请求 → meter 检查
+             ├─ 允许：上送控制器
+             └─ 超额：在交换机处丢弃
+```
+
+**③ 重复相同测试，再查看统计：**
+
+```shell
+h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 meter-stats s1
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0,actions=meter:1,CONTROLLER:128"
+OFPT_ERROR (OF1.3) (xid=0x6): OFPMMFC_INVALID_METER
+OFPT_FLOW_MOD (OF1.3) (xid=0x6): ADD priority=10,icmp,in_port="s1-eth1",nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0 actions=meter:1,CONTROLLER:128
+mininet> h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=2.71 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=1.61 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=1.65 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.470 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.393 ms
+64 bytes from 10.0.0.2: icmp_seq=6 ttl=64 time=0.595 ms
+64 bytes from 10.0.0.2: icmp_seq=7 ttl=64 time=0.429 ms
+64 bytes from 10.0.0.2: icmp_seq=8 ttl=64 time=0.392 ms
+64 bytes from 10.0.0.2: icmp_seq=9 ttl=64 time=0.380 ms
+64 bytes from 10.0.0.2: icmp_seq=10 ttl=64 time=1.28 ms
+--- 10.0.0.2 ping statistics ---
+10 packets transmitted, 10 received, 0% packet loss, time 1846ms
+rtt min/avg/max/mdev = 0.380/0.990/2.708/0.753 ms
+mininet> sh ovs-ofctl -O OpenFlow13 meter-stats s1
+OFPST_METER reply (OF1.3) (xid=0x2):
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=377.418s, table=0, n_packets=62, n_bytes=5652, priority=0 actions=CONTROLLER:128
+```
+
+原因明确了：**交换机中没有可用的 meter 1，因此引用它的规则被拒绝了。**
+
+证据是：
+
+- `OFPMMFC_INVALID_METER`：引用的 meter 无效。
+- `meter-stats` 为空。
+- 流表仍只有原来的兜底上送规则。
+
+所以刚才 **10 次 ping 全成功，不能视为限速后的结果**。
+
+现在先单独创建限速器：
+
+```
+sh ovs-ofctl -O OpenFlow13 add-meter s1 "meter=1,pktps,burst,stats,bands=type=drop,rate=1,burst_size=1"
+```
+
+然后检查它是否真正存在：
+
+```
+sh ovs-ofctl -O OpenFlow13 dump-meters s1
+```
+
+```shell
+mininet> h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+--- 10.0.0.2 ping statistics ---
+10 packets transmitted, 0 received, 100% packet loss, time 1868ms
+mininet> sh ovs-ofctl -O OpenFlow13 meter-stats s1
+OFPST_METER reply (OF1.3) (xid=0x2):
+meter:1 flow_count:1 packet_in_count:10 byte_in_count:980 duration:75.406s bands:
+0: packet_count:8 byte_count:784
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=22.141s, table=0, n_packets=10, n_bytes=980, priority=10,icmp,in_port="s1-eth1",nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0 actions=meter:1,CONTROLLER:128
+ cookie=0x0, duration=769.960s, table=0, n_packets=64, n_bytes=5792, priority=0 actions=CONTROLLER:128
+```
+
+限速器生效了，但**当前结果还不能解释为“限速丢掉了全部请求”**：
+
+| 统计                      | 数量 |
+| ------------------------- | ---- |
+| 进入 meter 的请求         | 10   |
+| 被 meter 的丢弃 band 丢弃 | 8    |
+| 没被这个 band 丢弃        | 2    |
+| ping 收到的回复           | 0    |
+
+注意，meter 的 `packet_in_count` 指**进入限速器的包数**，不是控制器收到的 Packet-In 数量。
+
+另外两个请求为什么也没有回复，需要继续查。我们新增的显式上送规则可能改变了 Packet-In 的原因字段，导致测试控制器没有按之前的方式处理；目前只是待验证原因。
+
+先不重复 ping，在 `mininet>` 执行：
+
+```shell
+sh grep -nE 'OFPT_PACKET_IN.*total_len=98|OFPT_PACKET_OUT.*data_len=98' /tmp/sdn-controller-meter.log | tail -n 12
+```
+
+日志证实：**另外 2 个请求已上报控制器，但没有对应的 Packet-Out**。它们标为 `via action`，而之前正常处理的是 `via no_match`。
+
+我之前的上送写法引入了额外的兼容性变量，需修正后重测，不能把这次 100% 失败都归因于限速。
+
+保持 meter 不变，只修改这条规则的上报原因：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 --strict mod-flows s1 "table=0,priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0,actions=meter:1,controller(reason=no_match,max_len=128)"
+```
+
+这是 OVS 支持的显式原因设置，用于本次测试控制器的兼容性对照。**标签写成 `no_match`，不代表这条规则没有匹配成功。**[OVS 官方说明](https://docs.openvswitch.org/en/latest/ref/ovs-actions.7/)
+
+逐条执行：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 meter-stats s1
+h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 meter-stats s1
+```
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 --strict mod-flows s1 "table=0,priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0,actions=meter:1,controller(reason=no_match,max_len=128)"
+mininet> sh ovs-ofctl -O OpenFlow13 meter-stats s1
+OFPST_METER reply (OF1.3) (xid=0x2):
+meter:1 flow_count:1 packet_in_count:10 byte_in_count:980 duration:1231.960s bands:
+0: packet_count:8 byte_count:784
+mininet> h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.999 ms
+64 bytes from 10.0.0.2: icmp_seq=6 ttl=64 time=1.51 ms
+--- 10.0.0.2 ping statistics ---
+10 packets transmitted, 2 received, 80% packet loss, time 1850ms
+rtt min/avg/max/mdev = 0.999/1.256/1.514/0.257 ms
+mininet> sh ovs-ofctl -O OpenFlow13 meter-stats s1
+OFPST_METER reply (OF1.3) (xid=0x2):
+meter:1 flow_count:1 packet_in_count:20 byte_in_count:1960 duration:1247.131s bands:
+0: packet_count:16 byte_count:1568
+```
+
+**这轮限速结果与统计一致了：**
+
+| 本轮统计      | 计算      | 结果      |
+| ------------- | --------- | --------- |
+| 进入 meter    | `20 − 10` | 10 个请求 |
+| 被 meter 丢弃 | `16 − 8`  | 8 个请求  |
+| ping 收到回复 | —         | 2 个      |
+
+这证明了一个实际代价：**限制上报数量时，正常的 ping 请求也可能被丢弃。**本次没有测控制器过载，因此还不能声称验证了过载保护效果。
+
+最后恢复配置。在 `mininet>` 下逐条执行：
+
+**① 只删除本实验的限速规则：**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 --strict del-flows s1 "table=0,priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0"
+```
+
+**② 删除 meter 1：**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 del-meters s1 "meter=1"
+```
+
+**③ 复测并检查配置：**
+
+```shell
+h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+sh ovs-ofctl -O OpenFlow13 dump-meters s1
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+```shell
+mininet> sh ovs-ofctl -O OpenFlow13 --strict del-flows s1 "table=0,priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0"
+mininet> sh ovs-ofctl -O OpenFlow13 del-meters s1 "meter=1"
+mininet> h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.811 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=1.74 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=1.03 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.467 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=1.43 ms
+64 bytes from 10.0.0.2: icmp_seq=6 ttl=64 time=1.80 ms
+64 bytes from 10.0.0.2: icmp_seq=7 ttl=64 time=0.820 ms
+64 bytes from 10.0.0.2: icmp_seq=8 ttl=64 time=1.69 ms
+64 bytes from 10.0.0.2: icmp_seq=9 ttl=64 time=0.983 ms
+64 bytes from 10.0.0.2: icmp_seq=10 ttl=64 time=0.966 ms
+
+--- 10.0.0.2 ping statistics ---
+10 packets transmitted, 10 received, 0% packet loss, time 1819ms
+rtt min/avg/max/mdev = 0.467/1.173/1.803/0.435 ms
+mininet> sh ovs-ofctl -O OpenFlow13 dump-meters s1
+OFPST_METER_CONFIG reply (OF1.3) (xid=0x2):
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+ cookie=0x0, duration=2203.837s, table=0, n_packets=89, n_bytes=8158, priority=0 actions=CONTROLLER:128
+```
+
+最后一组结果是：
+
+| 状态     | ping 回复                 |
+| -------- | ------------------------- |
+| 未限速   | 10/10                     |
+| 限速生效 | 2/10，meter 丢弃 8 个请求 |
+| 移除限速 | 10/10                     |
+
+你也确认了 meter 为空、限速规则消失，配置恢复完成。
+
+h1 **仍然发送了 10 个请求**，发送方式没有改变。
+
+交换机的 meter 丢弃了 8 个，只有 2 个获准上送控制器。
+
+因此，**控制器收到的请求减少了，但正常通信也损失了 8 次请求**。
+
+### 实验代码总结
+
+**1. 先分清命令在哪执行**
+
+```shell
+h1 ping ...
+sh ovs-ofctl ...
+```
+
+| 开头       | 含义                            |
+| ---------- | ------------------------------- |
+| `h1`       | 让虚拟主机 h1 执行后面的命令    |
+| `sh`       | 在承载 Mininet 的 Ubuntu 中执行 |
+| `mininet>` | 提示符，不需要输入              |
+
+`ovs-ofctl` 是通过 OpenFlow 管理交换机的命令行工具。例如：
+
+```
+sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+
+拆开就是：
+
+```
+sh                  在 Ubuntu 中执行
+ovs-ofctl           使用 OpenFlow 管理工具
+-O OpenFlow13       使用 OpenFlow 1.3
+dump-flows          查看流表
+s1                  操作的交换机
+```
+
+**2. 创建 meter：规定怎样限速**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-meter s1 "meter=1,pktps,burst,stats,bands=type=drop,rate=1,burst_size=1"
+```
+
+引号把整段配置作为一个参数交给程序。里面各项是：
+
+| 配置              | 意思                  |
+| ----------------- | --------------------- |
+| `add-meter s1`    | 在 s1 上创建限速器    |
+| `meter=1`         | 限速器编号为 1        |
+| `pktps`           | 按包/秒计量           |
+| `burst`           | 允许一定突发量        |
+| `stats`           | 开启统计              |
+| `bands=type=drop` | 超额时采取丢弃处理    |
+| `rate=1`          | 设定速率为每秒 1 个包 |
+| `burst_size=1`    | 突发额度为 1 个包     |
+
+它不是“每个自然秒必定放行恰好一个包”。短时间内放行多少，还受到包的到达时刻和突发额度影响。
+
+**创建 meter 本身不会让所有流量自动限速**，还需要流规则引用它。
+
+**3. 添加规则：规定哪些包经过 meter**
+
+我们最终使用的规则是：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 add-flow s1 "priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0,actions=meter:1,controller(reason=no_match,max_len=128)"
+```
+
+前半部分都是匹配条件：
+
+| 字段                      | 意思                                     |
+| ------------------------- | ---------------------------------------- |
+| `priority=10`             | 优先级为 10，高于原来优先级 0 的兜底规则 |
+| `icmp`                    | 匹配 ICMP 数据                           |
+| `in_port=1`               | 从 s1 的端口 1 进入                      |
+| `nw_src=10.0.0.1`         | 源 IP 为 h1                              |
+| `nw_dst=10.0.0.2`         | 目的 IP 为 h2                            |
+| `icmp_type=8,icmp_code=0` | ICMP 回显请求，也就是 ping 请求          |
+
+这些条件需要**同时满足**。
+
+后面的动作是：
+
+```shell
+actions=meter:1,controller(...)
+```
+
+处理顺序为：
+
+```
+匹配成功
+   ↓
+经过 meter 1
+   ├─ 超额：丢弃
+   └─ 允许：上送控制器
+```
+
+`reason=no_match` 是我们为兼容测试控制器而显式设置的上报原因标签，**不代表这条规则真的没有匹配成功**。
+
+`max_len=128` 也不是端口号或限速值。它是上报长度参数；但 OVS 2.7 之后不再按它截短上报，所以不能把它理解成你当前版本实际生效的 128 字节限制。[OVS 动作说明](https://docs.openvswitch.org/en/latest/ref/ovs-actions.7/)
+
+**4. ping 的输入与输出**
+
+```shell
+h1 ping -c 10 -i 0.2 -W 1 10.0.0.2
+```
+
+| 参数       | 意思                             |
+| ---------- | -------------------------------- |
+| `-c 10`    | 发送 10 个请求                   |
+| `-i 0.2`   | 相邻请求间隔 0.2 秒，约每秒 5 个 |
+| `-W 1`     | 设置等待回复的超时参数           |
+| `10.0.0.2` | 目标 IP                          |
+
+你的限速结果是：
+
+```
+10 packets transmitted, 2 received, 80% packet loss
+```
+
+即：发送了 10 次请求，收到 2 个回复，8 次没有收到回复。
+
+```shell
+icmp_seq=6 ... time=1.51 ms
+```
+
+表示收到了第 6 次请求的回复，这一次往返用时约 1.51 毫秒。
+
+**5. meter 输出怎样读**
+
+```
+meter:1 flow_count:1 packet_in_count:20 byte_in_count:1960
+bands:
+0: packet_count:16 byte_count:1568
+```
+
+| 字段                      | 意思                                 |
+| ------------------------- | ------------------------------------ |
+| `meter:1`                 | 当前查看 meter 1                     |
+| `flow_count:1`            | 有 1 条流规则引用它                  |
+| `packet_in_count:20`      | 累计有 20 个包进入 meter             |
+| `byte_in_count:1960`      | 这些包合计 1960 字节                 |
+| band 的 `packet_count:16` | 本实验的丢弃 band 累计丢弃了 16 个包 |
+
+**这里的 `packet_in_count` 不是控制器的 Packet-In 消息数量。**
+
+因为计数会累计，我们要做减法：
+
+```
+本轮进入：20 − 10 = 10
+本轮丢弃：16 − 8 = 8
+```
+
+所以本轮有 2 个请求没有被 meter 丢弃，与收到 2 个回复相符。
+
+**6. 删除配置，为什么分两步**
+
+```shell
+sh ovs-ofctl -O OpenFlow13 --strict del-flows s1 "table=0,priority=10,icmp,in_port=1,nw_src=10.0.0.1,nw_dst=10.0.0.2,icmp_type=8,icmp_code=0"
+```
+
+它先删除**引用 meter 的那条规则**。`--strict` 要求严格匹配指定条件与优先级，避免把其他规则一起删除。
+
+然后：
+
+```shell
+sh ovs-ofctl -O OpenFlow13 del-meters s1 "meter=1"
+```
+
+删除 meter 本身。
+
+最后 `dump-meters` 只显示标题，没有配置；`dump-flows` 只剩兜底规则，ping 恢复 10 发 10 收，就完成了恢复验证。
+
+之前日志命令里的符号也可以这样记：
+
+| 符号       | 作用                               |
+| ---------- | ---------------------------------- |
+| `>`        | 输出写入文件，覆盖原内容           |
+| `>>`       | 输出追加到文件末尾                 |
+| `2>&1`     | 错误、诊断信息也写到标准输出的目标 |
+| `|`        | 把前一个命令的输出交给后一个命令   |
+| 末尾的 `&` | 在后台运行                         |
+
+**流规则，就是交换机流表里的一条“什么数据适用、适用后怎么处理”的记录。**我们之前学过的“匹配条件 → 动作”，就是它的核心。
+
+你已经亲手添加过这一条：
+
+```
+priority=100,dl_dst=00:00:00:00:00:02 actions=output:2
+```
+
+翻译成人话是：
+
+> 如果帧的目的 MAC 是 h2，就从交换机端口 2 发出去；这条规则的优先级是 100。
+
+一条规则可以拆成：
+
+| 部分     | 回答的问题             | 这个例子       |
+| -------- | ---------------------- | -------------- |
+| 匹配条件 | 哪些帧适用？           | 目的 MAC 是 h2 |
+| 优先级   | 多条规则都适用时选谁？ | 100            |
+| 动作     | 选中后怎样处理？       | 从端口 2 发出  |
+| 计数器   | 有多少包命中过它？     | `n_packets`    |
+
+**“流表”是一张表，“流规则”是表中的一条记录。**一个规则也可以匹配很多包，不是每个包都要建立一条规则。
+
+回到刚才的限速规则，它的意思是：
+
+```
+符合条件的 h1→h2 ping 请求
+          ↓
+命中这条规则，规则计数增加
+          ↓
+执行动作：先经过 meter
+          ├─ 8 个超额，被丢弃
+          └─ 2 个获准上报控制器
+```
+
+因此，**`n_packets=10` 表示 10 个包匹配了规则，不表示 10 个包都转发成功。**匹配之后，动作仍然可以是丢弃或限速。
